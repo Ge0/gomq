@@ -9,10 +9,13 @@ import (
 	pb "../routeguide"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
-	"io"
+	//"io"
 	"time"
+	//"os"
+	//"os/signal"
 )
 
+var exitLoop bool
 var src = rand.NewSource(time.Now().UnixNano())
 var messagesCache map[string]pb.Message
 
@@ -24,10 +27,10 @@ func main() {
 	flag.Parse()
 
 	fmt.Printf("Launching client...\n")
-	messagesCache := make(map[string]pb.Message)
+	//messagesCache := make(map[string]pb.Message)
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithInsecure())
-	conn, err := grpc.Dial("kojiro.gcir.ovh:10001", opts...)
+	conn, err := grpc.Dial(":10001", opts...)
 	if err != nil {
 		grpclog.Fatalf("Fail to dial: %v", err)
 		return
@@ -37,27 +40,14 @@ func main() {
 	client := pb.NewRouteGuideClient(conn)
 
 	// TODO: subscribe to key
-	result, err := client.Subscribe(context.Background(), &pb.Subscription{&pb.Key{keyArg}, consumerIdArg})
+	result, err := client.Subscribe(context.Background(), &pb.Subscription{keyArg, consumerIdArg})
 	fmt.Printf("Result is: %v & error is %v\n", result.Code, err)
 
-	// Observation
 	for true {
 		identification := pb.Identification{consumerIdArg}
-		stream, _ := client.Observe(context.Background(), &identification)
-		for {
-			in, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-
-			if _, ok := messagesCache[in.Value.Id]; !ok {
-				// Message not in cache: save it
-				messagesCache[in.Value.Id] = *in.Value
-				fmt.Printf("[+] (ID: %s) %s\n", in.Value.Id, string(in.Value.Payload))
-				if len(messagesCache) > 30000 {
-					messagesCache = make(map[string]pb.Message)
-				}
-			}
+		recordSet, _ := client.Observe(context.Background(), &identification)
+		for _, record := range recordSet.Records {
+			fmt.Printf("[%s] %s\n", record.Key, record.Value.Payload)
 		}
 	}
 }

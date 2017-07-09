@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+var exitLoop bool
 var src = rand.NewSource(time.Now().UnixNano())
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -53,7 +54,7 @@ func main() {
 	fmt.Printf("Launching client...\n")
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithInsecure())
-	conn, err := grpc.Dial("kojiro.gcir.ovh:10001", opts...)
+	conn, err := grpc.Dial(":10001", opts...)
 	if err != nil {
 		grpclog.Fatalf("Fail to dial: %v", err)
 		return
@@ -64,8 +65,8 @@ func main() {
 
 	for true {
 		// Publish something.
-		key := pb.Key{keyArg}
-		record := pb.PublishRecord{&key, []byte(RandStringBytesMaskImprSrc(8))}
+		key := keyArg
+		record := pb.PublishRecord{key, []byte(RandStringBytesMaskImprSrc(8))}
 		_, err = client.Publish(context.Background(), &record)
 		fmt.Printf("Publish '%s'\n", string(record.Payload))
 	}

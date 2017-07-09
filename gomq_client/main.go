@@ -9,7 +9,6 @@ import (
 	pb "../routeguide"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
-	"io"
 	"time"
 )
 
@@ -54,7 +53,6 @@ func main() {
 	flag.Parse()
 
 	fmt.Printf("Launching client...\n")
-	messagesCache := make(map[string]pb.Message)
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithInsecure())
 	conn, err := grpc.Dial("kojiro.gcir.ovh:10001", opts...)
@@ -67,29 +65,19 @@ func main() {
 	client := pb.NewRouteGuideClient(conn)
 
 	// TODO: subscribe to key
-	result, err := client.Subscribe(context.Background(), &pb.Subscription{&pb.Key{keyArg}, consumerIdArg})
+	result, err := client.Subscribe(context.Background(), &pb.Subscription{keyArg, consumerIdArg})
 	fmt.Printf("Result is: %v & error is %v\n", result.Code, err)
 
 	// Observation
 	for true {
 		// Publish something?
-		key := pb.Key{keyArg}
-		record := pb.PublishRecord{&key, []byte(RandStringBytesMaskImprSrc(8))}
+		record := pb.PublishRecord{keyArg, []byte(RandStringBytesMaskImprSrc(8))}
 		_, err = client.Publish(context.Background(), &record)
 		identification := pb.Identification{consumerIdArg}
-		stream, _ := client.Observe(context.Background(), &identification)
-		for {
-			in, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-
-			if _, ok := messagesCache[in.Value.Id]; !ok {
-				// Message not in cache: save it
-				messagesCache[in.Value.Id] = *in.Value
-				fmt.Printf("[+] (ID: %s) %s\n", in.Value.Id, string(in.Value.Payload))
-			}
-
+		recordSet, _ := client.Observe(context.Background(), &identification)
+		for _, record := range recordSet.Records {
+			fmt.Printf("[%s] %s\n", record.Key, record.Value.Payload)
 		}
 	}
+
 }

@@ -6,29 +6,29 @@ service RouteGuide {
 	rpc Publish(PublishRecord) returns (Result) {}
 	rpc Subscribe(Subscription) returns (Result) {}
 	rpc Unsubscribe(Subscription) returns (Result) {}
-	rpc Observe(Identification) returns (stream Record) {}
+	rpc Observe(Identification) returns (RecordSet) {}
 }
 
 message Identification {
 	string consumerID = 1;
 }
 
+message RecordSet {
+	repeated Record records = 1;
+}
+
 message Record {
-	Key key = 1;
+	string key = 1;
 	Message value = 2;
 }
 
 message Subscription {
-	Key key = 1;
+	string key = 1;
 	string consumerID = 2;
 }
 
-message Key {
-	string content = 1;
-}
-
 message PublishRecord {
-	Key key = 1;
+	string key = 1;
 	bytes payload = 2;
 }
 
