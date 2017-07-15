@@ -119,7 +119,7 @@ func MessageNotifier(redisConnection *redis.Client, messageToDispatchChannel cha
 	for true {
 		referencedKeys, _ := redisConnection.SMembers(SUBSCRIBED_KEYS).Result()
 		if len(referencedKeys) == 0 {
-			time.Sleep(1 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
