@@ -15,15 +15,14 @@ import (
 )
 
 type routeGuideServer struct {
-	redisConnection          *redis.Client
-	channels GoMQChannels
+	redisConnection *redis.Client
+	channels        GoMQChannels
 }
 
-
 type GoMQChannels struct {
-	subscription chan Subscription
-	unsubscription chan Unsubscription
-	messageToStore chan IncomingMessage
+	subscription      chan Subscription
+	unsubscription    chan Unsubscription
+	messageToStore    chan IncomingMessage
 	messageToDispatch chan IncomingMessage
 }
 
@@ -270,16 +269,7 @@ func LaunchGoRoutines(redisConnection *redis.Client, channels GoMQChannels) {
 	go MessageNotifier(redisConnection, channels.messageToDispatch, newSubscribedKeyChannel)
 }
 
-func main() {
-	redisConnection := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "",
-		DB:       0,
-	})
-	redisConnection.FlushDB()
-
-	defer redisConnection.Close()
-
+func SpawnGoMQServer(redisConnection *redis.Client) {
 	lis, err := net.Listen("tcp", ":10001")
 
 	if err != nil {
@@ -306,4 +296,18 @@ func main() {
 	pb.RegisterRouteGuideServer(grpcServer, &svr)
 	log.Println("Server listening...")
 	grpcServer.Serve(lis)
+
+}
+
+func main() {
+	redisConnection := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+	redisConnection.FlushDB()
+
+	defer redisConnection.Close()
+
+	SpawnGoMQServer(redisConnection)
 }
