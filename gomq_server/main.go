@@ -48,7 +48,7 @@ const SUBSCRIBED_KEYS = "SUBSCRIBED_KEYS"
 
 const TTL_KEY = 30 * time.Second
 
-func Subscriptor(redisConnection *redis.Client, subscriptionChannel chan Subscription) {
+func Subscriptor(redisConnection *redis.Client, subscriptionChannel chan Subscription, newSubscribedKeyChannel chan string) {
 	for true {
 		newSubscription := <-subscriptionChannel
 
@@ -77,6 +77,8 @@ func Subscriptor(redisConnection *redis.Client, subscriptionChannel chan Subscri
 		}
 		RefreshPeer(redisConnection, newSubscription.consumerID, newSubscription.peerInfo)
 		ReferenceKey(redisConnection, newSubscription.key)
+
+		newSubscribedKeyChannel <- newSubscription.key
 
 	}
 }
@@ -115,15 +117,18 @@ func RefreshPeer(redisConnection *redis.Client, consumerID string, peerInfo stri
 	redisConnection.Set(LASTACTION_PREFIX+consumerID+"_"+peerInfo, time.Now().String(), 30*time.Second)
 }
 
-func MessageNotifier(redisConnection *redis.Client, messageToDispatchChannel chan IncomingMessage) {
+func MessageNotifier(redisConnection *redis.Client, messageToDispatchChannel chan IncomingMessage, newSubscribedKeyChannel chan string) {
 	for true {
+		var info []string
+		var err error
 		referencedKeys, _ := redisConnection.SMembers(SUBSCRIBED_KEYS).Result()
 		if len(referencedKeys) == 0 {
-			time.Sleep(500 * time.Millisecond)
-			continue
+			newReferencedKey := <-newSubscribedKeyChannel // Block until there is a subscription
+			info, err = redisConnection.BLPop(1*time.Second, newReferencedKey).Result()
+		} else {
+			info, err = redisConnection.BLPop(1*time.Second, referencedKeys...).Result()
 		}
 
-		info, err := redisConnection.BLPop(1*time.Second, referencedKeys...).Result()
 		if err == nil {
 			// info[0] = key
 			// info[1] = value
@@ -250,12 +255,12 @@ func Dequeue(redisConnection *redis.Client, consumerID string, key string, peerI
 	return dequeuedRecords
 }
 
-func LaunchGoRoutines(redisConnection *redis.Client, subscriptionChannel chan Subscription, unsubscriptionChannel chan Unsubscription, messageToStoreChannel chan IncomingMessage, messageToDispatchChannel chan IncomingMessage) {
-	go Subscriptor(redisConnection, subscriptionChannel)
+func LaunchGoRoutines(redisConnection *redis.Client, subscriptionChannel chan Subscription, unsubscriptionChannel chan Unsubscription, messageToStoreChannel chan IncomingMessage, messageToDispatchChannel chan IncomingMessage, newSubscribedKeyChannel chan string) {
+	go Subscriptor(redisConnection, subscriptionChannel, newSubscribedKeyChannel)
 	go Unsubscriptor(redisConnection, unsubscriptionChannel)
 	go MessageReceiver(redisConnection, messageToStoreChannel)
 	go MessageDispatcher(redisConnection, messageToDispatchChannel)
-	go MessageNotifier(redisConnection, messageToDispatchChannel)
+	go MessageNotifier(redisConnection, messageToDispatchChannel, newSubscribedKeyChannel)
 }
 
 func main() {
@@ -281,9 +286,10 @@ func main() {
 	unsubscriptionChannel := make(chan Unsubscription)
 	messageToStoreChannel := make(chan IncomingMessage)
 	messageToDispatchChannel := make(chan IncomingMessage)
+	newSubscribedKeyChannel := make(chan string)
 
 	// Launch goroutines
-	LaunchGoRoutines(redisConnection, subscriptionChannel, unsubscriptionChannel, messageToStoreChannel, messageToDispatchChannel)
+	LaunchGoRoutines(redisConnection, subscriptionChannel, unsubscriptionChannel, messageToStoreChannel, messageToDispatchChannel, newSubscribedKeyChannel)
 
 	svr := routeGuideServer{
 		redisConnection,
