@@ -16,10 +16,15 @@ import (
 
 type routeGuideServer struct {
 	redisConnection          *redis.Client
-	subscriptionChannel      chan Subscription
-	unsubscriptionChannel    chan Unsubscription
-	messageToStoreChannel    chan IncomingMessage
-	messageToDispatchChannel chan IncomingMessage
+	channels GoMQChannels
+}
+
+
+type GoMQChannels struct {
+	subscription chan Subscription
+	unsubscription chan Unsubscription
+	messageToStore chan IncomingMessage
+	messageToDispatch chan IncomingMessage
 }
 
 type Subscription struct {
@@ -208,18 +213,18 @@ func dispatchMessageToPeers(redisConnection *redis.Client, key string, consumerI
 }
 
 func (s *routeGuideServer) Publish(ctx context.Context, record *pb.PublishRecord) (*pb.Result, error) {
-	s.messageToStoreChannel <- IncomingMessage{record.Key, record.Payload}
+	s.channels.messageToStore <- IncomingMessage{record.Key, record.Payload}
 	return &pb.Result{0}, nil
 }
 
 func (s *routeGuideServer) Subscribe(ctx context.Context, subscription *pb.Subscription) (*pb.Result, error) {
 	peer, _ := peer.FromContext(ctx)
-	s.subscriptionChannel <- Subscription{subscription.Key, subscription.ConsumerID, peer.Addr.String()}
+	s.channels.subscription <- Subscription{subscription.Key, subscription.ConsumerID, peer.Addr.String()}
 	return &pb.Result{0}, nil
 }
 
 func (s *routeGuideServer) Unsubscribe(ctx context.Context, subscription *pb.Subscription) (*pb.Result, error) {
-	s.unsubscriptionChannel <- Unsubscription{subscription.Key, subscription.ConsumerID}
+	s.channels.unsubscription <- Unsubscription{subscription.Key, subscription.ConsumerID}
 	return &pb.Result{0}, nil
 }
 
@@ -255,12 +260,14 @@ func Dequeue(redisConnection *redis.Client, consumerID string, key string, peerI
 	return dequeuedRecords
 }
 
-func LaunchGoRoutines(redisConnection *redis.Client, subscriptionChannel chan Subscription, unsubscriptionChannel chan Unsubscription, messageToStoreChannel chan IncomingMessage, messageToDispatchChannel chan IncomingMessage, newSubscribedKeyChannel chan string) {
-	go Subscriptor(redisConnection, subscriptionChannel, newSubscribedKeyChannel)
-	go Unsubscriptor(redisConnection, unsubscriptionChannel)
-	go MessageReceiver(redisConnection, messageToStoreChannel)
-	go MessageDispatcher(redisConnection, messageToDispatchChannel)
-	go MessageNotifier(redisConnection, messageToDispatchChannel, newSubscribedKeyChannel)
+func LaunchGoRoutines(redisConnection *redis.Client, channels GoMQChannels) {
+	newSubscribedKeyChannel := make(chan string)
+
+	go Subscriptor(redisConnection, channels.subscription, newSubscribedKeyChannel)
+	go Unsubscriptor(redisConnection, channels.unsubscription)
+	go MessageReceiver(redisConnection, channels.messageToStore)
+	go MessageDispatcher(redisConnection, channels.messageToDispatch)
+	go MessageNotifier(redisConnection, channels.messageToDispatch, newSubscribedKeyChannel)
 }
 
 func main() {
@@ -282,21 +289,19 @@ func main() {
 	grpcServer := grpc.NewServer()
 
 	// Create channels
-	subscriptionChannel := make(chan Subscription)
-	unsubscriptionChannel := make(chan Unsubscription)
-	messageToStoreChannel := make(chan IncomingMessage)
-	messageToDispatchChannel := make(chan IncomingMessage)
-	newSubscribedKeyChannel := make(chan string)
+	gomqChannels := GoMQChannels{
+		make(chan Subscription),
+		make(chan Unsubscription),
+		make(chan IncomingMessage),
+		make(chan IncomingMessage),
+	}
 
 	// Launch goroutines
-	LaunchGoRoutines(redisConnection, subscriptionChannel, unsubscriptionChannel, messageToStoreChannel, messageToDispatchChannel, newSubscribedKeyChannel)
+	LaunchGoRoutines(redisConnection, gomqChannels)
 
 	svr := routeGuideServer{
 		redisConnection,
-		subscriptionChannel,
-		unsubscriptionChannel,
-		messageToStoreChannel,
-		messageToDispatchChannel,
+		gomqChannels,
 	}
 	pb.RegisterRouteGuideServer(grpcServer, &svr)
 	log.Println("Server listening...")
