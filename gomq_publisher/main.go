@@ -46,9 +46,8 @@ type DatabaseRecord struct {
 }
 
 func main() {
-	var keyArg, consumerIdArg string
+	var keyArg string
 	flag.StringVar(&keyArg, "key", "key", "Key to publish to.")
-	flag.StringVar(&consumerIdArg, "consumer_id", "BASE_CLIENT", "Consumer ID to use.")
 	flag.Parse()
 
 	fmt.Printf("Launching client...\n")
@@ -69,5 +68,6 @@ func main() {
 		record := pb.PublishRecord{key, []byte(RandStringBytesMaskImprSrc(8))}
 		_, err = client.Publish(context.Background(), &record)
 		fmt.Printf("Publish '%s'\n", string(record.Payload))
+		//time.Sleep(1 * time.Second)
 	}
 }

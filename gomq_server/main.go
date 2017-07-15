@@ -9,20 +9,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
 	"log"
+	//"sync"
 	"net"
-	"sync"
 	"time"
 )
-
-// First key: subscribed key; second key: consumer IDs
-var subscribedKeys map[string]map[string]bool
-
-// First key: consumer id ; second key: subscribed key
-var consumers map[string]map[string]bool
-
-var subscribersCursor map[string]int
-
-var lockSubscribers, lockRedisQueue sync.RWMutex
 
 type routeGuideServer struct {
 }
@@ -46,7 +36,8 @@ type IncomingMessage struct {
 var subscriptionChannel chan Subscription
 var unsubscriptionChannel chan Unsubscription
 var messageToStoreChannel chan IncomingMessage
-var messageToDispatchChannel chan string
+var messageToReceivedChannel chan IncomingMessage
+var messageToDispatchChannel chan IncomingMessage
 var messageToFetchChannel chan Subscription
 var newMessageChannel chan string
 
@@ -57,7 +48,9 @@ const SUBSCRIPTIONS_PREFIX = "SUBSCRIPTIONS_"
 const PEERS_PREFIX = "PEERS_"
 const MESSAGES_PREFIX = "MESSAGES_"
 const QUEUE_PREFIX = "QUEUE_"
+const LASTACTION_PREFIX = "LASTACTION_"
 const REFERENCED_KEYS = "REFERENCED_KEYS"
+
 const TTL_KEY = 30 * time.Second
 
 func GenerateNewId() string {
@@ -94,7 +87,47 @@ func Subscriptor() {
 		if !isMember {
 			redisConn.SAdd(redisKey, redisValue)
 		}
+		RefreshPeer(newSubscription.ConsumerID, newSubscription.PeerInfo)
 
+	}
+}
+
+func RemovePeer(redisConn *redis.Client, consumerID string, peer string) {
+	redisKey := PEERS_PREFIX + consumerID
+	isMember, _ := redisConn.SIsMember(redisKey, peer).Result()
+	if isMember {
+		redisConn.SRem(redisKey, peer)
+	}
+}
+
+func ReferenceKey(key string) {
+	redisConn, _ := GetRedisConnection()
+	isMember, _ := redisConn.SIsMember(REFERENCED_KEYS, QUEUE_PREFIX+key).Result()
+	if !isMember {
+		redisConn.SAdd(REFERENCED_KEYS, QUEUE_PREFIX+key)
+	}
+}
+
+func RefreshPeer(consumerID string, peerInfo string) {
+	redisConn, _ := GetRedisConnection()
+	redisConn.Set(LASTACTION_PREFIX+consumerID+"_"+peerInfo, time.Now().String(), 30*time.Second)
+}
+
+func MessageNotifier() {
+	redisConn, _ := GetRedisConnection()
+	for true {
+		referencedKeys, _ := redisConn.SMembers(REFERENCED_KEYS).Result()
+		if len(referencedKeys) == 0 {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		info, err := redisConn.BLPop(1*time.Second, referencedKeys...).Result()
+		if err == nil {
+			// info[0] = key
+			// info[1] = value
+			info[0] = info[0][len("QUEUE_"):]
+			messageToDispatchChannel <- IncomingMessage{info[0], []byte(info[1])}
+		}
 	}
 }
 
@@ -127,30 +160,30 @@ func MessageReceiver() {
 		redisKey := QUEUE_PREFIX + incomingMessage.Key
 		db_record := pb.Message{GenerateNewId(), time.Now().Format(time.UnixDate), incomingMessage.Payload}
 		marshalled_value, _ := json.Marshal(db_record)
-		redisConn.RPush(redisKey, string(marshalled_value)).Err()
-		redisConn.Expire(redisKey, 30*time.Second)
 
-		messageToDispatchChannel <- incomingMessage.Key
+		redisConn.RPush(redisKey, string(marshalled_value)).Err()
+
+		redisConn.Expire(redisKey, 30*time.Second)
+		ReferenceKey(incomingMessage.Key)
 	}
 }
 
 func MessageDispatcher() {
 	for true {
-		key := <-messageToDispatchChannel
+		incomingMessage := <-messageToDispatchChannel
 		redisConn, _ := GetRedisConnection()
-		message, _ := redisConn.LPop(QUEUE_PREFIX + key).Result()
 
 		// Round robin through different consumers
-		subscribers, cursor, _ := redisConn.SScan(CONSUMERS_PREFIX+key, 0, "*", 10).Result()
+		subscribers, cursor, _ := redisConn.SScan(CONSUMERS_PREFIX+incomingMessage.Key, 0, "*", 10).Result()
 		if len(subscribers) == 0 {
 			// If there is no subscribers yet, Push the message back to the main queue
-			redisConn.LPush(QUEUE_PREFIX+key, message)
+			redisConn.LPush(QUEUE_PREFIX+incomingMessage.Key, incomingMessage.Payload)
 		} else {
 			for ok := true; ok; ok = (cursor != 0) {
 				for _, subscriber := range subscribers {
-					dispatchMessageToPeers(redisConn, key, subscriber, message)
+					dispatchMessageToPeers(redisConn, incomingMessage.Key, subscriber, string(incomingMessage.Payload))
 				}
-				subscribers, cursor, _ = redisConn.SScan(CONSUMERS_PREFIX+key, cursor, "*", 10).Result()
+				subscribers, cursor, _ = redisConn.SScan(CONSUMERS_PREFIX+incomingMessage.Key, cursor, "*", 10).Result()
 			}
 		}
 	}
@@ -163,32 +196,20 @@ func dispatchMessageToPeers(redisConn *redis.Client, key string, consumerID stri
 	peers, cursor, _ := redisConn.SScan(redisPeersKey, 0, "*", 10).Result()
 	for ok := true; ok; ok = (cursor != 0) {
 		for _, peer := range peers {
-			redisMessagesKey := MESSAGES_PREFIX + key + "_" + consumerID + "_" + peer
-			redisConn.RPush(redisMessagesKey, message)
-			redisConn.Expire(redisMessagesKey, 30*time.Second)
+			lastAction, _ := redisConn.Get(LASTACTION_PREFIX + consumerID + "_" + peer).Result()
+			if lastAction != "" {
+				redisMessagesKey := MESSAGES_PREFIX + key + "_" + consumerID + "_" + peer
+				redisConn.RPush(redisMessagesKey, message)
+				redisConn.Expire(redisMessagesKey, 30*time.Second)
+			} else {
+				// Remove inactive peer
+				RemovePeer(redisConn, consumerID, peer)
+			}
 		}
 		peers, cursor, _ = redisConn.SScan(redisPeersKey, 0, "*", 10).Result()
 	}
 }
 
-func LaunchGoRoutines() {
-	go Subscriptor()
-	go Unsubscriptor()
-	go MessageReceiver()
-	go MessageDispatcher()
-}
-
-func IsSubscriber(consumerID string, key string) bool {
-	var ret bool = false
-	lockSubscribers.RLock()
-	if subscriptions, ok := consumers[consumerID]; ok {
-		if _, ok := subscriptions[key]; ok {
-			ret = true
-		}
-	}
-	lockSubscribers.RUnlock()
-	return ret
-}
 func GetRedisConnection() (*redis.Client, error) {
 	_, err := redisConnection.Ping().Result()
 	return redisConnection, err
@@ -223,6 +244,8 @@ func (s *routeGuideServer) Observe(ctx context.Context, identification *pb.Ident
 	recordSet := pb.RecordSet{}
 	peer, _ := peer.FromContext(ctx)
 
+	RefreshPeer(identification.ConsumerID, peer.Addr.String())
+
 	redisKey := SUBSCRIPTIONS_PREFIX + identification.ConsumerID
 	subscribedKeys, cursor, _ := redisConn.SScan(redisKey, 0, "*", 10).Result()
 	for ok := true; ok; ok = (cursor != 0) {
@@ -248,23 +271,32 @@ func Dequeue(redisConn *redis.Client, consumerID string, key string, peerInfo st
 	return dequeuedRecords
 }
 
+func LaunchGoRoutines() {
+	// Create channels for goroutines
+	subscriptionChannel = make(chan Subscription)
+	unsubscriptionChannel = make(chan Unsubscription)
+	messageToStoreChannel = make(chan IncomingMessage)
+	messageToDispatchChannel = make(chan IncomingMessage)
+	messageToFetchChannel = make(chan Subscription)
+	newMessageChannel = make(chan string)
+
+	// Launch them
+	go Subscriptor()
+	go Unsubscriptor()
+	go MessageReceiver()
+	go MessageDispatcher()
+	go MessageNotifier()
+}
+
 func main() {
 	redisConnection = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		Password: "",
 		DB:       0,
 	})
+	redisConnection.FlushDB()
+
 	defer redisConnection.Close()
-
-	consumers = make(map[string]map[string]bool)
-
-	// Create channels for goroutines
-	subscriptionChannel = make(chan Subscription)
-	unsubscriptionChannel = make(chan Unsubscription)
-	messageToStoreChannel = make(chan IncomingMessage)
-	messageToDispatchChannel = make(chan string)
-	messageToFetchChannel = make(chan Subscription)
-	newMessageChannel = make(chan string)
 
 	// Launch goroutines
 	LaunchGoRoutines()
