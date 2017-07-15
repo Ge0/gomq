@@ -15,27 +15,27 @@ import (
 )
 
 type routeGuideServer struct {
-	RedisConnection          *redis.Client
-	SubscriptionChannel      chan Subscription
-	UnsubscriptionChannel    chan Unsubscription
-	MessageToStoreChannel    chan IncomingMessage
-	MessageToDispatchChannel chan IncomingMessage
+	redisConnection          *redis.Client
+	subscriptionChannel      chan Subscription
+	unsubscriptionChannel    chan Unsubscription
+	messageToStoreChannel    chan IncomingMessage
+	messageToDispatchChannel chan IncomingMessage
 }
 
 type Subscription struct {
-	Key        string
-	ConsumerID string
-	PeerInfo   string
+	key        string
+	consumerID string
+	peerInfo   string
 }
 
 type Unsubscription struct {
-	Key        string
-	ConsumerID string
+	key        string
+	consumerID string
 }
 
 type IncomingMessage struct {
-	Key     string
-	Payload []byte
+	key     string
+	payload []byte
 }
 
 const CONSUMERS_PREFIX = "CONSUMERS_"
@@ -44,7 +44,7 @@ const PEERS_PREFIX = "PEERS_"
 const MESSAGES_PREFIX = "MESSAGES_"
 const QUEUE_PREFIX = "QUEUE_"
 const LASTACTION_PREFIX = "LASTACTION_"
-const REFERENCED_KEYS = "REFERENCED_KEYS"
+const SUBSCRIBED_KEYS = "SUBSCRIBED_KEYS"
 
 const TTL_KEY = 30 * time.Second
 
@@ -53,15 +53,15 @@ func Subscriptor(redisConnection *redis.Client, subscriptionChannel chan Subscri
 		newSubscription := <-subscriptionChannel
 
 		// Add the subscription
-		redisKey := CONSUMERS_PREFIX + newSubscription.Key
-		redisValue := newSubscription.ConsumerID
+		redisKey := CONSUMERS_PREFIX + newSubscription.key
+		redisValue := newSubscription.consumerID
 		isMember, _ := redisConnection.SIsMember(redisKey, redisValue).Result()
 		if !isMember {
 			redisConnection.SAdd(redisKey, redisValue)
 		}
 
-		redisKey = SUBSCRIPTIONS_PREFIX + newSubscription.ConsumerID
-		redisValue = newSubscription.Key
+		redisKey = SUBSCRIPTIONS_PREFIX + newSubscription.consumerID
+		redisValue = newSubscription.key
 		isMember, _ = redisConnection.SIsMember(redisKey, redisValue).Result()
 		if !isMember {
 			redisConnection.SAdd(redisKey, redisValue)
@@ -69,13 +69,14 @@ func Subscriptor(redisConnection *redis.Client, subscriptionChannel chan Subscri
 
 		// In case where several peers have the same consumer ID,
 		// Save the peer
-		redisKey = PEERS_PREFIX + newSubscription.ConsumerID
-		redisValue = newSubscription.PeerInfo
+		redisKey = PEERS_PREFIX + newSubscription.consumerID
+		redisValue = newSubscription.peerInfo
 		isMember, _ = redisConnection.SIsMember(redisKey, redisValue).Result()
 		if !isMember {
 			redisConnection.SAdd(redisKey, redisValue)
 		}
-		RefreshPeer(redisConnection, newSubscription.ConsumerID, newSubscription.PeerInfo)
+		RefreshPeer(redisConnection, newSubscription.consumerID, newSubscription.peerInfo)
+		ReferenceKey(redisConnection, newSubscription.key)
 
 	}
 }
@@ -86,12 +87,23 @@ func RemovePeer(redisConnection *redis.Client, consumerID string, peer string) {
 	if isMember {
 		redisConnection.SRem(redisKey, peer)
 	}
+
+	// If the consumer has zero peer, unsubscribe from keys
+	subscribedKeys, cursor, _ := redisConnection.SScan(SUBSCRIPTIONS_PREFIX+consumerID, 0, "*", 10).Result()
+	for ok := true; ok; ok = (cursor != 0) {
+		for _, key := range subscribedKeys {
+			redisConnection.SRem(CONSUMERS_PREFIX+key, consumerID)
+
+			// If the current key has no subscriber, unreference it
+		}
+	}
+
 }
 
 func ReferenceKey(redisConnection *redis.Client, key string) {
-	isMember, _ := redisConnection.SIsMember(REFERENCED_KEYS, QUEUE_PREFIX+key).Result()
+	isMember, _ := redisConnection.SIsMember(SUBSCRIBED_KEYS, QUEUE_PREFIX+key).Result()
 	if !isMember {
-		redisConnection.SAdd(REFERENCED_KEYS, QUEUE_PREFIX+key)
+		redisConnection.SAdd(SUBSCRIBED_KEYS, QUEUE_PREFIX+key)
 	}
 }
 
@@ -101,11 +113,12 @@ func RefreshPeer(redisConnection *redis.Client, consumerID string, peerInfo stri
 
 func MessageNotifier(redisConnection *redis.Client, messageToDispatchChannel chan IncomingMessage) {
 	for true {
-		referencedKeys, _ := redisConnection.SMembers(REFERENCED_KEYS).Result()
+		referencedKeys, _ := redisConnection.SMembers(SUBSCRIBED_KEYS).Result()
 		if len(referencedKeys) == 0 {
 			time.Sleep(1 * time.Second)
 			continue
 		}
+
 		info, err := redisConnection.BLPop(1*time.Second, referencedKeys...).Result()
 		if err == nil {
 			// info[0] = key
@@ -121,17 +134,17 @@ func Unsubscriptor(redisConnection *redis.Client, unsubscriptionChannel chan Uns
 
 	// Warning: if there are more than one peer for one consumer ID,
 	// Then the other peers will be unsubscribed as well.
-	redisKey := CONSUMERS_PREFIX + unsubscriptionQuery.Key
-	redisValue := unsubscriptionQuery.ConsumerID
+	redisKey := CONSUMERS_PREFIX + unsubscriptionQuery.key
+	redisValue := unsubscriptionQuery.consumerID
 	isMember, _ := redisConnection.SIsMember(redisKey, redisValue).Result()
-	if !isMember {
+	if isMember {
 		redisConnection.SRem(redisKey, redisValue)
 	}
 
-	redisKey = SUBSCRIPTIONS_PREFIX + unsubscriptionQuery.ConsumerID
-	redisValue = unsubscriptionQuery.Key
+	redisKey = SUBSCRIPTIONS_PREFIX + unsubscriptionQuery.consumerID
+	redisValue = unsubscriptionQuery.key
 	isMember, _ = redisConnection.SIsMember(redisKey, redisValue).Result()
-	if !isMember {
+	if isMember {
 		redisConnection.SRem(redisKey, redisValue)
 	}
 }
@@ -139,14 +152,13 @@ func Unsubscriptor(redisConnection *redis.Client, unsubscriptionChannel chan Uns
 func MessageReceiver(redisConnection *redis.Client, messageToStoreChannel chan IncomingMessage) {
 	for true {
 		incomingMessage := <-messageToStoreChannel
-		redisKey := QUEUE_PREFIX + incomingMessage.Key
-		db_record := pb.Message{xid.New().String(), time.Now().Format(time.UnixDate), incomingMessage.Payload}
+		redisKey := QUEUE_PREFIX + incomingMessage.key
+		db_record := pb.Message{xid.New().String(), time.Now().Format(time.UnixDate), incomingMessage.payload}
 		marshalled_value, _ := json.Marshal(db_record)
 
 		redisConnection.RPush(redisKey, string(marshalled_value)).Err()
 
 		redisConnection.Expire(redisKey, 30*time.Second)
-		ReferenceKey(redisConnection, incomingMessage.Key)
 	}
 }
 
@@ -155,17 +167,12 @@ func MessageDispatcher(redisConnection *redis.Client, messageToDispatchChannel c
 		incomingMessage := <-messageToDispatchChannel
 
 		// Round robin through different consumers
-		subscribers, cursor, _ := redisConnection.SScan(CONSUMERS_PREFIX+incomingMessage.Key, 0, "*", 10).Result()
-		if len(subscribers) == 0 {
-			// If there is no subscribers yet, Push the message back to the main queue
-			redisConnection.LPush(QUEUE_PREFIX+incomingMessage.Key, incomingMessage.Payload)
-		} else {
-			for ok := true; ok; ok = (cursor != 0) {
-				for _, subscriber := range subscribers {
-					dispatchMessageToPeers(redisConnection, incomingMessage.Key, subscriber, string(incomingMessage.Payload))
-				}
-				subscribers, cursor, _ = redisConnection.SScan(CONSUMERS_PREFIX+incomingMessage.Key, cursor, "*", 10).Result()
+		subscribers, cursor, _ := redisConnection.SScan(CONSUMERS_PREFIX+incomingMessage.key, 0, "*", 10).Result()
+		for ok := true; ok; ok = (cursor != 0) {
+			for _, subscriber := range subscribers {
+				dispatchMessageToPeers(redisConnection, incomingMessage.key, subscriber, string(incomingMessage.payload))
 			}
+			subscribers, cursor, _ = redisConnection.SScan(CONSUMERS_PREFIX+incomingMessage.key, cursor, "*", 10).Result()
 		}
 	}
 }
@@ -192,18 +199,18 @@ func dispatchMessageToPeers(redisConnection *redis.Client, key string, consumerI
 }
 
 func (s *routeGuideServer) Publish(ctx context.Context, record *pb.PublishRecord) (*pb.Result, error) {
-	s.MessageToStoreChannel <- IncomingMessage{record.Key, record.Payload}
+	s.messageToStoreChannel <- IncomingMessage{record.Key, record.Payload}
 	return &pb.Result{0}, nil
 }
 
 func (s *routeGuideServer) Subscribe(ctx context.Context, subscription *pb.Subscription) (*pb.Result, error) {
 	peer, _ := peer.FromContext(ctx)
-	s.SubscriptionChannel <- Subscription{subscription.Key, subscription.ConsumerID, peer.Addr.String()}
+	s.subscriptionChannel <- Subscription{subscription.Key, subscription.ConsumerID, peer.Addr.String()}
 	return &pb.Result{0}, nil
 }
 
 func (s *routeGuideServer) Unsubscribe(ctx context.Context, subscription *pb.Subscription) (*pb.Result, error) {
-	s.UnsubscriptionChannel <- Unsubscription{subscription.Key, subscription.ConsumerID}
+	s.unsubscriptionChannel <- Unsubscription{subscription.Key, subscription.ConsumerID}
 	return &pb.Result{0}, nil
 }
 
@@ -212,16 +219,16 @@ func (s *routeGuideServer) Observe(ctx context.Context, identification *pb.Ident
 	recordSet := pb.RecordSet{}
 	peer, _ := peer.FromContext(ctx)
 
-	RefreshPeer(s.RedisConnection, identification.ConsumerID, peer.Addr.String())
+	RefreshPeer(s.redisConnection, identification.ConsumerID, peer.Addr.String())
 
 	redisKey := SUBSCRIPTIONS_PREFIX + identification.ConsumerID
-	subscribedKeys, cursor, _ := s.RedisConnection.SScan(redisKey, 0, "*", 10).Result()
+	subscribedKeys, cursor, _ := s.redisConnection.SScan(redisKey, 0, "*", 10).Result()
 	for ok := true; ok; ok = (cursor != 0) {
 		for _, key := range subscribedKeys {
-			dequeuedRecords := Dequeue(s.RedisConnection, identification.ConsumerID, key, peer.Addr.String())
+			dequeuedRecords := Dequeue(s.redisConnection, identification.ConsumerID, key, peer.Addr.String())
 			recordSet.Records = append(recordSet.Records, dequeuedRecords...)
 		}
-		subscribedKeys, cursor, _ = s.RedisConnection.SScan(redisKey, cursor, "*", 10).Result()
+		subscribedKeys, cursor, _ = s.redisConnection.SScan(redisKey, cursor, "*", 10).Result()
 	}
 	return &recordSet, nil
 }
