@@ -95,6 +95,10 @@ func RemovePeer(redisConnection *redis.Client, consumerID string, peer string) {
 			redisConnection.SRem(CONSUMERS_PREFIX+key, consumerID)
 
 			// If the current key has no subscriber, unreference it
+			count, _ := redisConnection.SCard(CONSUMERS_PREFIX + key).Result()
+			if count == 0 {
+				redisConnection.SRem(SUBSCRIBED_KEYS, key)
+			}
 		}
 	}
 
