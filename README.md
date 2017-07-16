@@ -16,7 +16,7 @@ The Message Queuer provides clients with four RPC functions:
   * **Observe()**: fetch payloads from subscribed keys
 
 The client has to pull itself the server, since `gRPC` does not support (yet?)
-direct call from server to client.
+direct calls from server to client.
 
 ## Redis usage
 
@@ -43,9 +43,6 @@ store relevant information:
   key will contain the queue of messages published to `FOO`, dedicated to the
   client whose consumer id is `BAR` and remote peer information is
   `127.0.0.1:5467`.
-  * `LASTACTION_`: prefix for a given peer, contain the timestamp of its last
-  call to Observe(). If the client has not observed for 30 seconds, it is
-  considered to be a timeout and the peer is disconnected.
   * `SUBSCRIBED_KEYS`: list of keys that have at least one subscriber.
 
 ## Queues
