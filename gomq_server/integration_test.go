@@ -5,10 +5,10 @@ import (
 	"github.com/rs/xid"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"log"
+	//"log"
+	"os/exec"
 	"testing"
 	"time"
-	"os/exec"
 )
 
 func setupClient() (pb.RouteGuideClient, *grpc.ClientConn) {
@@ -53,7 +53,7 @@ func TestMultipleConsumersMultipleSubscribers(t *testing.T) {
 		publisher1.Publish(context.Background(), &pb.PublishRecord{key1, []byte(val1)})
 		messagesSentPublisher1 = append(messagesSentPublisher1, val1)
 
-		if i % 30 == 0 {
+		if i%30 == 0 {
 			publisher2.Publish(context.Background(), &pb.PublishRecord{key2, []byte(val2)})
 			messagesSentPublisher2 = append(messagesSentPublisher2, val2)
 		}
@@ -89,7 +89,7 @@ func TestMultipleConsumersMultipleSubscribers(t *testing.T) {
 
 	cmd.Process.Kill()
 
-	if len(messagesReceivedConsumer1) != len(messagesSentPublisher1) + len(messagesSentPublisher2) {
+	if len(messagesReceivedConsumer1) != len(messagesSentPublisher1)+len(messagesSentPublisher2) {
 		t.Fatal("Number of messages received by the first consumer do not match.")
 	}
 
