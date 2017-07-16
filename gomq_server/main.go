@@ -47,7 +47,6 @@ const SUBSCRIPTIONS_PREFIX = "SUBSCRIPTIONS_"
 const PEERS_PREFIX = "PEERS_"
 const MESSAGES_PREFIX = "MESSAGES_"
 const QUEUE_PREFIX = "QUEUE_"
-const LASTACTION_PREFIX = "LASTACTION_"
 const SUBSCRIBED_KEYS = "SUBSCRIBED_KEYS"
 
 const TTL_KEY = 30 * time.Second
@@ -79,33 +78,7 @@ func Subscriptor(redisConnection *redis.Client, subscriptionChannel chan Subscri
 		if !isMember {
 			redisConnection.SAdd(redisKey, redisValue)
 		}
-		RefreshPeer(redisConnection, newSubscription.consumerID, newSubscription.peerInfo)
 		ReferenceKey(redisConnection, newSubscription.key)
-
-		//newSubscribedKeyChannel <- newSubscription.key
-
-	}
-}
-
-func RemovePeer(redisConnection *redis.Client, consumerID string, peer string) {
-	redisKey := PEERS_PREFIX + consumerID
-	isMember, _ := redisConnection.SIsMember(redisKey, peer).Result()
-	if isMember {
-		redisConnection.SRem(redisKey, peer)
-	}
-
-	// If the consumer has zero peer, unsubscribe from keys
-	subscribedKeys, cursor, _ := redisConnection.SScan(SUBSCRIPTIONS_PREFIX+consumerID, 0, "*", 10).Result()
-	for ok := true; ok; ok = (cursor != 0) {
-		for _, key := range subscribedKeys {
-			redisConnection.SRem(CONSUMERS_PREFIX+key, consumerID)
-
-			// If the current key has no subscriber, unreference it
-			count, _ := redisConnection.SCard(CONSUMERS_PREFIX + key).Result()
-			if count == 0 {
-				redisConnection.SRem(SUBSCRIBED_KEYS, key)
-			}
-		}
 	}
 }
 
@@ -116,23 +89,16 @@ func ReferenceKey(redisConnection *redis.Client, key string) {
 	}
 }
 
-func RefreshPeer(redisConnection *redis.Client, consumerID string, peerInfo string) {
-	redisConnection.Set(LASTACTION_PREFIX+consumerID+"_"+peerInfo, time.Now().String(), 30*time.Second)
-}
-
 func MessageNotifier(redisConnection *redis.Client, messageToDispatchChannel chan IncomingMessage) {
 	for true {
 		var info []string
 		var err error
 		referencedKeys, _ := redisConnection.SMembers(SUBSCRIBED_KEYS).Result()
 		if len(referencedKeys) == 0 {
-			//newReferencedKey := <-newSubscribedKeyChannel // Block until there is a subscription
-			//info, err = redisConnection.BLPop(1*time.Second, newReferencedKey).Result()
 			info, err = redisConnection.BLPop(1*time.Second, SUBSCRIBED_KEYS).Result()
 			if err == nil {
 				redisConnection.LPush(info[0], info[1])
 			}
-			//time.Sleep(500 * time.Millisecond)
 			continue
 		} else {
 			info, err = redisConnection.BLPop(1*time.Second, referencedKeys...).Result()
@@ -202,17 +168,11 @@ func dispatchMessageToPeers(redisConnection *redis.Client, key string, consumerI
 	peers, cursor, _ := redisConnection.SScan(redisPeersKey, 0, "*", 10).Result()
 	for ok := true; ok; ok = (cursor != 0) {
 		for _, peer := range peers {
-			lastAction, _ := redisConnection.Get(LASTACTION_PREFIX + consumerID + "_" + peer).Result()
-			if lastAction != "" {
-				redisMessagesKey := MESSAGES_PREFIX + key + "_" + consumerID + "_" + peer
-				redisConnection.RPush(redisMessagesKey, message)
-				redisConnection.Expire(redisMessagesKey, 30*time.Second)
-			} else {
-				// Remove inactive peer
-				RemovePeer(redisConnection, consumerID, peer)
-			}
+			redisMessagesKey := MESSAGES_PREFIX + key + "_" + consumerID + "_" + peer
+			redisConnection.RPush(redisMessagesKey, message)
+			redisConnection.Expire(redisMessagesKey, 30*time.Second)
 		}
-		peers, cursor, _ = redisConnection.SScan(redisPeersKey, 0, "*", 10).Result()
+		peers, cursor, _ = redisConnection.SScan(redisPeersKey, cursor, "*", 10).Result()
 	}
 }
 
@@ -236,8 +196,6 @@ func (s *routeGuideServer) Observe(ctx context.Context, identification *pb.Ident
 	// Get observed keys
 	recordSet := pb.RecordSet{}
 	peer, _ := peer.FromContext(ctx)
-
-	RefreshPeer(s.redisConnection, identification.ConsumerID, peer.Addr.String())
 
 	redisKey := SUBSCRIPTIONS_PREFIX + identification.ConsumerID
 	subscribedKeys, cursor, _ := s.redisConnection.SScan(redisKey, 0, "*", 10).Result()
