@@ -114,22 +114,24 @@ func MessageNotifier(redisConnection *redis.Client, messageToDispatchChannel cha
 }
 
 func Unsubscriptor(redisConnection *redis.Client, unsubscriptionChannel chan Unsubscription) {
-	unsubscriptionQuery := <-unsubscriptionChannel
+	for true {
+		unsubscriptionQuery := <-unsubscriptionChannel
 
-	// Warning: if there are more than one peer for one consumer ID,
-	// Then the other peers will be unsubscribed as well.
-	redisKey := CONSUMERS_PREFIX + unsubscriptionQuery.key
-	redisValue := unsubscriptionQuery.consumerID
-	isMember, _ := redisConnection.SIsMember(redisKey, redisValue).Result()
-	if isMember {
-		redisConnection.SRem(redisKey, redisValue)
-	}
+		// Warning: if there are more than one peer for one consumer ID,
+		// Then the other peers will be unsubscribed as well.
+		redisKey := CONSUMERS_PREFIX + unsubscriptionQuery.key
+		redisValue := unsubscriptionQuery.consumerID
+		isMember, _ := redisConnection.SIsMember(redisKey, redisValue).Result()
+		if isMember {
+			redisConnection.SRem(redisKey, redisValue)
+		}
 
-	redisKey = SUBSCRIPTIONS_PREFIX + unsubscriptionQuery.consumerID
-	redisValue = unsubscriptionQuery.key
-	isMember, _ = redisConnection.SIsMember(redisKey, redisValue).Result()
-	if isMember {
-		redisConnection.SRem(redisKey, redisValue)
+		redisKey = SUBSCRIPTIONS_PREFIX + unsubscriptionQuery.consumerID
+		redisValue = unsubscriptionQuery.key
+		isMember, _ = redisConnection.SIsMember(redisKey, redisValue).Result()
+		if isMember {
+			redisConnection.SRem(redisKey, redisValue)
+		}
 	}
 }
 
