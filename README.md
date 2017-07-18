@@ -4,7 +4,26 @@
 written in Go using `gRPC` and `redis` to connect simulaneous publishers
 and subscribers.
 
+# Content
+
+Among the directories, there are:
+
+  * `gomq_server`: the server itself, probably the most relevant part.
+  * `routeguide`: the described protocol in protobuff used by gRPC.
+  * `gomq_client`: just an example of a client for gomq.
+  * `gomq_consumer`: just an example of a consumer for gomq.
+  * `gomq_publisher`: just an example of a publisher for gomq.
+
 # How it works
+
+## Configuration
+
+You can configure a few settings like the redis server address, password and
+database to use as well as the port you want the server to bind to. Take
+a look at the default.json file to see how the configuration is structured.
+
+You can provide the server with your own configuration by setting the
+`--config` flag as an argument to the `gomq_server`.
 
 ## Remote Procedure Call (RPC)
 
@@ -56,3 +75,11 @@ If there is no subscribers, the main queue is not dequeued. As a consequence,
 one can publish a paylaod to a key when there is no subscriber at all. When
 a client will subscribe to the key, then the message will be dequeued from the
 main queue to the dedicated queue of the client.
+
+# Roadmap
+
+  * **Enhance integration tests**: The server should be spawned in a neat way
+  before testing its features.
+  * **Handle client timeout/disconnection**: There is currently no client
+  disconnection nor timeout management, thus leaving artifacts in the redis
+  database.
