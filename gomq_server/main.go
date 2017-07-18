@@ -90,9 +90,10 @@ func MessageDispatcher(redisConnection *redis.Client, messageToDispatchChannel c
 	for true {
 		incomingMessage := <-messageToDispatchChannel
 
+		var subscribers []string
 		var cursor uint64 = 0
 		for ok := true; ok; {
-			subscribers, cursor, _ := redisConnection.SScan(CONSUMERS_PREFIX+incomingMessage.key, cursor, "*", 10).Result()
+			subscribers, cursor, _ = redisConnection.SScan(CONSUMERS_PREFIX+incomingMessage.key, cursor, "*", 10).Result()
 			for _, subscriber := range subscribers {
 				dispatchMessageToPeers(redisConnection, incomingMessage.key, subscriber, string(incomingMessage.payload))
 			}
@@ -103,9 +104,10 @@ func MessageDispatcher(redisConnection *redis.Client, messageToDispatchChannel c
 
 func dispatchMessageToPeers(redisConnection *redis.Client, key string, consumerID string, message string) {
 	redisPeersKey := PEERS_PREFIX + consumerID
+	var peers []string
 	var cursor uint64 = 0
 	for ok := true; ok; {
-		peers, cursor, _ := redisConnection.SScan(redisPeersKey, cursor, "*", 10).Result()
+		peers, cursor, _ = redisConnection.SScan(redisPeersKey, cursor, "*", 10).Result()
 		for _, peer := range peers {
 			redisMessagesKey := MESSAGES_PREFIX + key + "_" + consumerID + "_" + peer
 			redisConnection.RPush(redisMessagesKey, message)
@@ -186,9 +188,10 @@ func (s *routeGuideServer) Observe(ctx context.Context, identification *pb.Ident
 	peer, _ := peer.FromContext(ctx)
 
 	redisKey := SUBSCRIPTIONS_PREFIX + identification.ConsumerID
+	var subscribedKeys []string
 	var cursor uint64 = 0
 	for ok := true; ok; {
-		subscribedKeys, cursor, _ := s.redisConnection.SScan(redisKey, cursor, "*", 10).Result()
+		subscribedKeys, cursor, _ = s.redisConnection.SScan(redisKey, cursor, "*", 10).Result()
 		for _, key := range subscribedKeys {
 			dequeuedRecords := Dequeue(s.redisConnection, identification.ConsumerID, key, peer.Addr.String())
 			recordSet.Records = append(recordSet.Records, dequeuedRecords...)
