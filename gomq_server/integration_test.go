@@ -43,6 +43,7 @@ func TestLotsOfConsumersLotsOfSubscribersServer(t *testing.T) {
 		consumers[i] = setupClient()
 		consumers[i].consumerID = "CONSUMER_" + strconv.Itoa(i)
 		consumers[i].route.Subscribe(context.Background(), &pb.Subscription{key, consumers[i].consumerID})
+		defer consumers[i].connection.Close()
 	}
 
 	time.Sleep(2 * time.Second) // Wait for subscriptions
@@ -51,6 +52,7 @@ func TestLotsOfConsumersLotsOfSubscribersServer(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		publishers[i] = setupClient()
 		publishers[i].consumerID = "PUBLISHER_" + strconv.Itoa(i)
+		defer publishers[i].connection.Close()
 	}
 
 	for i := 0; i < 100; i++ {
