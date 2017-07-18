@@ -1,0 +1,8 @@
+{
+	"RedisServer": {
+		"Addr": "localhost:6379",
+		"Password": "",
+		"DB": 0
+	},
+	"ListeningHost": ":10001"
+}
