@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
 	"log"
-	//"sync"
 	"net"
 	"time"
 )
@@ -162,7 +161,6 @@ func (s *routeGuideServer) Subscribe(ctx context.Context, subscription *pb.Subsc
 }
 
 func (s *routeGuideServer) Unsubscribe(ctx context.Context, subscription *pb.Subscription) (*pb.Result, error) {
-	//s.channels.unsubscription <- Unsubscription{subscription.Key, subscription.ConsumerID}
 	// Warning: if there are more than one peer for one consumer ID,
 	// Then the other peers will be unsubscribed as well.
 	redisKey := CONSUMERS_PREFIX + subscription.Key
