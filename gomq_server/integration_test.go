@@ -154,7 +154,7 @@ func TestMultipleConsumersMultipleSubscribers(t *testing.T) {
 	}
 
 	if len(messagesReceivedConsumer2) != len(messagesSentPublisher2) {
-		t.Fatal("Number of messages received bu the second consumer do not match.")
+		t.Fatal("Number of messages received by the second consumer do not match.")
 	}
 	cmd.Process.Kill()
 }
